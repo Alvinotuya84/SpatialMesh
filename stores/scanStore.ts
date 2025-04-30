@@ -61,6 +61,10 @@ interface ScanState {
   captureInterval: number; // ms between frame captures
   maxFrames: number;
 
+  // Device status tracking
+  lastDeviceStability: number;
+  lastTrackingStatus: { isTracking: boolean; reason: string };
+
   // Actions
   setStage: (stage: ScanningStage) => void;
   addFrame: (frame: ScanFrame) => void;
@@ -70,6 +74,10 @@ interface ScanState {
   setProcessingStatus: (status: Partial<ProcessingStatus>) => void;
   setScanQuality: (quality: "low" | "medium" | "high") => void;
   setError: (error: string | null) => void;
+  updateDeviceStatus: (
+    stability: number,
+    trackingStatus: { isTracking: boolean; reason: string }
+  ) => void;
   resetScan: () => void;
 }
 
@@ -91,13 +99,23 @@ export const useScanStore = create<ScanState>((set) => ({
   captureInterval: 300, // 300ms between frames by default
   maxFrames: 100,
 
+  // Device status tracking
+  lastDeviceStability: 1.0,
+  lastTrackingStatus: { isTracking: false, reason: "INITIALIZING" },
+
   // Actions
   setStage: (stage) => set({ stage }),
 
   addFrame: (frame) =>
-    set((state) => ({
-      frames: [...state.frames, frame],
-    })),
+    set((state) => {
+      // Don't add more frames if we've reached the maximum
+      if (state.frames.length >= state.maxFrames) {
+        return state;
+      }
+      return {
+        frames: [...state.frames, frame],
+      };
+    }),
 
   clearFrames: () => set({ frames: [] }),
 
@@ -143,6 +161,12 @@ export const useScanStore = create<ScanState>((set) => ({
 
   setError: (error) => set({ error }),
 
+  updateDeviceStatus: (stability, trackingStatus) =>
+    set({
+      lastDeviceStability: stability,
+      lastTrackingStatus: trackingStatus,
+    }),
+
   resetScan: () =>
     set({
       stage: "ready",
@@ -155,5 +179,7 @@ export const useScanStore = create<ScanState>((set) => ({
         message: "",
       },
       error: null,
+      lastDeviceStability: 1.0,
+      lastTrackingStatus: { isTracking: false, reason: "INITIALIZING" },
     }),
 }));

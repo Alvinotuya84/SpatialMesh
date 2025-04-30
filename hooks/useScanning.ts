@@ -41,7 +41,7 @@ export function useScanning({
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [isARReady, setIsARReady] = useState(false);
 
-  const cameraRef = useRef<Camera>(null);
+  const cameraRef = useRef<typeof Camera>(null);
   const arSceneRef = useRef<ARScene | null>(null);
   const glRef = useRef<any>(null);
   const arSessionRef = useRef<any>(null);
