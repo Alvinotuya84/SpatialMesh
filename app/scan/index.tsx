@@ -13,6 +13,10 @@ import {
   ViroARSceneNavigator,
   ViroNode,
   ViroText,
+  ViroTrackingState,
+  ViroTrackingReason,
+  ViroTrackingStateConstants,
+  ViroARTrackingReasonConstants,
 } from "@reactvision/react-viro";
 import Animated, {
   useSharedValue,
@@ -20,18 +24,11 @@ import Animated, {
   withSpring,
   withTiming,
 } from "react-native-reanimated";
-import { Accelerometer, DeviceMotion } from "expo-sensors";
+import { DeviceMotion } from "expo-sensors";
 import { v4 as uuidv4 } from "uuid";
-
-import {
-  useScanStore,
-  ScanningStage,
-  ScanFrame,
-  ScanPoint,
-} from "../../stores/scanStore";
+import { useScanStore, ScanningStage, ScanFrame } from "../../stores/scanStore";
 import { THREE } from "expo-three";
 
-// Main Scanning Screen Component
 export default function ScanningScreen() {
   const router = useRouter();
   const {
@@ -46,12 +43,12 @@ export default function ScanningScreen() {
 
   const [deviceTracking, setDeviceTracking] = useState<{
     isTracking: boolean;
-    trackingState: string;
-    trackingStateReason: string;
+    trackingState: ViroTrackingState;
+    trackingStateReason: ViroTrackingReason;
   }>({
     isTracking: false,
-    trackingState: "UNKNOWN",
-    trackingStateReason: "Not started",
+    trackingState: ViroTrackingStateConstants.TRACKING_UNAVAILABLE,
+    trackingStateReason: ViroARTrackingReasonConstants.TRACKING_REASON_NONE,
   });
 
   const [captureActive, setCaptureActive] = useState(false);
@@ -65,17 +62,22 @@ export default function ScanningScreen() {
     rotation: new THREE.Quaternion(),
   });
 
-  // Animation values
   const buttonScale = useSharedValue(1);
   const headerHeight = useSharedValue(120);
   const footerHeight = useSharedValue(100);
   const infoOpacity = useSharedValue(1);
 
-  // Subscribe to device motion for better tracking
   useEffect(() => {
     DeviceMotion.setUpdateInterval(100);
     const subscription = DeviceMotion.addListener((data) => {
-      // This data can be used to improve point cloud generation
+      if (data) {
+        const { rotation } = data;
+        cameraRef.current.rotation.set(
+          rotation.alpha,
+          rotation.beta,
+          rotation.gamma
+        );
+      }
     });
 
     return () => {
@@ -83,7 +85,6 @@ export default function ScanningScreen() {
     };
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (captureTimeoutRef.current) {
@@ -93,7 +94,6 @@ export default function ScanningScreen() {
     };
   }, [resetScan]);
 
-  // UI animations based on scanning state
   useEffect(() => {
     if (stage === "scanning") {
       headerHeight.value = withTiming(80, { duration: 300 });
@@ -106,28 +106,24 @@ export default function ScanningScreen() {
     }
   }, [stage, headerHeight, footerHeight, infoOpacity]);
 
-  // Register frame capture loop
   useEffect(() => {
     if (captureActive && stage === "scanning") {
       const captureFrame = () => {
         if (cameraRef.current && deviceTracking.isTracking) {
-          // Create a new scan frame with current camera data
           const newFrame: ScanFrame = {
             id: uuidv4(),
             timestamp: Date.now(),
-            points: [], // This would be populated by the AR system in a real implementation
+            points: [],
             cameraPosition: cameraRef.current.position.clone(),
             cameraRotation: cameraRef.current.rotation.clone(),
           };
 
           addFrame(newFrame);
 
-          // Schedule next capture
           captureTimeoutRef.current = setTimeout(captureFrame, captureInterval);
         }
       };
 
-      // Start the capture loop
       captureFrame();
     }
 
@@ -145,7 +141,6 @@ export default function ScanningScreen() {
     deviceTracking.isTracking,
   ]);
 
-  // Toggle scanning state
   const toggleScanning = () => {
     if (stage === "ready" || stage === "paused") {
       setStage("scanning");
@@ -156,39 +151,42 @@ export default function ScanningScreen() {
     }
   };
 
-  // Complete scanning and move to processing
   const completeScanning = () => {
     setCaptureActive(false);
     setStage("processing");
 
-    // Navigate to preview screen with captured data
     router.push("/scan/preview");
   };
 
-  // Cancel scanning and go back to home
   const cancelScanning = () => {
     resetScan();
     router.back();
   };
 
-  // Handle AR tracking updates
-  const onTrackingUpdated = (state: string, reason: string) => {
+  const onTrackingUpdated = (
+    state: ViroTrackingState,
+    reason: ViroTrackingReason
+  ) => {
     setDeviceTracking({
-      isTracking: state === "TRACKING_NORMAL",
+      isTracking: state === ViroTrackingStateConstants.TRACKING_NORMAL,
       trackingState: state,
       trackingStateReason: reason,
     });
 
-    // Update app state based on tracking
-    if (state === "TRACKING_NORMAL" && stage === "initializing") {
+    if (
+      state === ViroTrackingStateConstants.TRACKING_NORMAL &&
+      stage === "initializing"
+    ) {
       setStage("ready");
-    } else if (state !== "TRACKING_NORMAL" && stage === "scanning") {
+    } else if (
+      state !== ViroTrackingStateConstants.TRACKING_NORMAL &&
+      stage === "scanning"
+    ) {
       setStage("paused");
       setCaptureActive(false);
     }
   };
 
-  // Handle button animations
   const handlePressIn = () => {
     buttonScale.value = withSpring(0.95);
   };
@@ -197,7 +195,6 @@ export default function ScanningScreen() {
     buttonScale.value = withSpring(1);
   };
 
-  // Animated styles
   const headerAnimatedStyle = useAnimatedStyle(() => {
     return {
       height: headerHeight.value,
@@ -223,25 +220,26 @@ export default function ScanningScreen() {
     };
   });
 
-  // Create the AR Scene component
   const ARSceneComponent = () => {
     return (
       <ViroARScene
-        onTrackingUpdated={(state, reason) => onTrackingUpdated(state, reason)}
-        onCameraTransformUpdate={(position, rotation) => {
-          // Update the camera reference with latest position and rotation
+        onTrackingUpdated={onTrackingUpdated}
+        onCameraTransformUpdate={(cameraTransform) => {
           cameraRef.current = {
-            position: new THREE.Vector3(position[0], position[1], position[2]),
+            position: new THREE.Vector3(
+              cameraTransform.position[0],
+              cameraTransform.position[1],
+              cameraTransform.position[2]
+            ),
             rotation: new THREE.Quaternion(
-              rotation[0],
-              rotation[1],
-              rotation[2],
-              rotation[3]
+              cameraTransform.rotation[0],
+              cameraTransform.rotation[1],
+              cameraTransform.rotation[2]
+              // cameraTransform.rotation[3]
             ),
           };
         }}
       >
-        {/* Debug text showing tracking state */}
         <ViroNode position={[0, -1, -2]}>
           <ViroText
             text={`Frames: ${frames.length} | Tracking: ${
@@ -259,8 +257,6 @@ export default function ScanningScreen() {
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
-
-      {/* AR Scene Navigator */}
       <ViroARSceneNavigator
         initialScene={{
           scene: ARSceneComponent,
@@ -268,14 +264,11 @@ export default function ScanningScreen() {
         style={styles.arView}
         ref={sceneRef}
       />
-
-      {/* Header UI */}
       <Animated.View style={[styles.header, headerAnimatedStyle]}>
         <SafeAreaView style={styles.headerContent}>
           <TouchableOpacity style={styles.backButton} onPress={cancelScanning}>
             <Text style={styles.backButtonText}>Cancel</Text>
           </TouchableOpacity>
-
           <Animated.View style={[styles.statusContainer, infoAnimatedStyle]}>
             <Text style={styles.statusText}>
               {stage === "initializing"
@@ -291,8 +284,6 @@ export default function ScanningScreen() {
           </Animated.View>
         </SafeAreaView>
       </Animated.View>
-
-      {/* Guidance overlay */}
       <Animated.View style={[styles.guidanceOverlay, infoAnimatedStyle]}>
         {stage === "ready" && (
           <View style={styles.guidanceBox}>
@@ -308,7 +299,6 @@ export default function ScanningScreen() {
             </Text>
           </View>
         )}
-
         {stage === "paused" && (
           <View style={styles.guidanceBox}>
             <Text style={styles.guidanceTitle}>Scanning Paused</Text>
@@ -321,11 +311,8 @@ export default function ScanningScreen() {
           </View>
         )}
       </Animated.View>
-
-      {/* Footer with controls */}
       <Animated.View style={[styles.footer, footerAnimatedStyle]}>
         <SafeAreaView style={styles.footerContent}>
-          {/* Scan progress indicator */}
           <View style={styles.progressContainer}>
             <View style={styles.progressBar}>
               <View
@@ -337,8 +324,6 @@ export default function ScanningScreen() {
             </View>
             <Text style={styles.progressText}>{frames.length} frames</Text>
           </View>
-
-          {/* Action buttons */}
           <View style={styles.controlsContainer}>
             <Animated.View style={[buttonAnimatedStyle]}>
               <TouchableOpacity
@@ -360,7 +345,6 @@ export default function ScanningScreen() {
                 </Text>
               </TouchableOpacity>
             </Animated.View>
-
             {frames.length > 10 &&
               (stage === "paused" || stage === "scanning") && (
                 <TouchableOpacity
