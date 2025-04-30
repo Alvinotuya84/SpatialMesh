@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   Alert,
   BackHandler,
+  Platform,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { Camera } from "expo-camera";
@@ -14,8 +15,8 @@ import {
   ViroARSceneNavigator,
   ViroNode,
   ViroText,
-  ViroARPlaneSelector,
-  ViroBox,
+  ViroTrackingStateConstants,
+  ViroARTrackingReasonConstants,
 } from "@reactvision/react-viro";
 import { THREE } from "expo-three";
 import { useRouter } from "expo-router";
@@ -33,6 +34,10 @@ import Button from "../ui/Button";
 import GuidanceOverlay from "./GuidanceOverlay";
 import ProcessingOverlay from "./ProcessingOverlay";
 import ProgressIndicator from "../ui/ProgressIndicator";
+import {
+  logScanDebugInfo,
+  exportScanDebugData,
+} from "../../utils/debugging/scanDebugger";
 
 interface ScanningInterfaceProps {
   onScanComplete?: (meshId: string) => void;
@@ -45,8 +50,14 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
 }) => {
   const router = useRouter();
 
-  const { stage, frames, processingStatus, setStage, resetScan } =
-    useScanStore();
+  const {
+    stage,
+    frames,
+    processingStatus,
+    setStage,
+    resetScan,
+    updateDeviceStatus,
+  } = useScanStore();
 
   const {
     hasPermission,
@@ -61,6 +72,9 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
   } = useScanning({
     onScanComplete: (meshId) => {
       onScanComplete?.(meshId);
+
+      // Log debug info after scan completion
+      logScanDebugInfo();
     },
     onError: (error) => {
       Alert.alert("Error", error);
@@ -81,14 +95,45 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
 
   const [showGuidance, setShowGuidance] = useState(true);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [showDebugInfo, setShowDebugInfo] = useState(__DEV__);
 
   const arSceneNavigatorRef = useRef(null);
+  const cameraTransformRef = useRef<{
+    position: THREE.Vector3;
+    rotation: THREE.Quaternion;
+  }>({
+    position: new THREE.Vector3(),
+    rotation: new THREE.Quaternion(),
+  });
 
   // UI animations
   const headerHeight = useSharedValue(120);
   const footerHeight = useSharedValue(100);
   const guidanceOpacity = useSharedValue(1);
 
+  // Android back button handler
+  useEffect(() => {
+    const handleBackPress = () => {
+      handleBackButton();
+      return true;
+    };
+
+    BackHandler.addEventListener("hardwareBackPress", handleBackPress);
+
+    return () => {
+      BackHandler.removeEventListener("hardwareBackPress", handleBackPress);
+    };
+  }, [stage]);
+
+  // Update device status in store when stability or tracking changes
+  useEffect(() => {
+    updateDeviceStatus(deviceStability, {
+      isTracking: trackingStatus.isTracking,
+      reason: getTrackingReasonString(trackingStatus.reason),
+    });
+  }, [deviceStability, trackingStatus]);
+
+  // UI animations based on scanning state
   useEffect(() => {
     if (stage === "scanning") {
       headerHeight.value = withTiming(80, { duration: 300 });
@@ -102,6 +147,19 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
       guidanceOpacity.value = withTiming(1, { duration: 200 });
     }
   }, [stage, showGuidance]);
+
+  // Helper to convert tracking reason codes to readable strings
+  const getTrackingReasonString = (reason: number): string => {
+    switch (reason) {
+      case ViroARTrackingReasonConstants.TRACKING_REASON_EXCESSIVE_MOTION:
+        return "EXCESSIVE_MOTION";
+      case ViroARTrackingReasonConstants.TRACKING_REASON_INSUFFICIENT_FEATURES:
+        return "INSUFFICIENT_FEATURES";
+      case ViroARTrackingReasonConstants.TRACKING_REASON_NONE:
+      default:
+        return "NONE";
+    }
+  };
 
   const handleBackButton = () => {
     if (stage === "scanning" || stage === "paused") {
@@ -179,6 +237,19 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
     setShowGuidance(!showGuidance);
   };
 
+  const toggleDebugInfo = () => {
+    setShowDebugInfo(!showDebugInfo);
+  };
+
+  const exportDebugData = async () => {
+    const fileUri = await exportScanDebugData();
+    if (fileUri) {
+      Alert.alert("Debug Data Exported", `Data saved to: ${fileUri}`);
+    } else {
+      Alert.alert("Export Failed", "Could not export debug data");
+    }
+  };
+
   // Animated styles
   const headerAnimatedStyle = useAnimatedStyle(() => {
     return {
@@ -192,33 +263,82 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
     };
   });
 
+  // Initialize AR when tracking is available
+  const handleARInitialized = (state: number, reason: number) => {
+    updateTrackingStatus(state, reason);
+
+    if (state === ViroTrackingStateConstants.TRACKING_NORMAL) {
+      if (stage === "initializing") {
+        initializeAR(null, arSceneNavigatorRef.current);
+        setStage("ready");
+      }
+    }
+  };
+
+  // Update camera transform
+  const handleCameraTransformUpdate = (cameraTransform: any) => {
+    if (
+      cameraTransform &&
+      cameraTransform.position &&
+      cameraTransform.rotation
+    ) {
+      cameraTransformRef.current = {
+        position: new THREE.Vector3(
+          cameraTransform.position[0],
+          cameraTransform.position[1],
+          cameraTransform.position[2]
+        ),
+        rotation: new THREE.Quaternion(
+          cameraTransform.rotation[0],
+          cameraTransform.rotation[1],
+          cameraTransform.rotation[2],
+          // Quaternion w component may not be provided by Viro
+          cameraTransform.rotation[3] || 0
+        ),
+      };
+
+      // Update the camera reference with current transform
+      if (cameraRef && cameraRef.current) {
+        // Use a safe copying mechanism instead of direct assignment
+        Object.assign(cameraRef.current, {
+          position: cameraTransformRef.current.position.clone(),
+          rotation: cameraTransformRef.current.rotation.clone(),
+        });
+      }
+    }
+  };
+
   // AR Scene component
   const ARSceneComponent = () => (
     <ViroARScene
-      onTrackingUpdated={(state, reason) => {
-        updateTrackingStatus(state, reason);
-      }}
+      onTrackingUpdated={handleARInitialized}
+      onCameraTransformUpdate={handleCameraTransformUpdate}
     >
-      {/* Debug info - this would be hidden in production */}
-      <ViroNode position={[0, -1, -2]}>
-        <ViroText
-          text={`Frames: ${frames.length} | Tracking: ${
-            trackingStatus.isTracking ? "OK" : "Limited"
-          }`}
-          scale={[0.5, 0.5, 0.5]}
-          position={[0, 0, 0]}
-          style={{ color: "white", fontFamily: "Arial", fontSize: 12 }}
-        />
-      </ViroNode>
-
-      {/* Visualization of detected planes */}
-      <ViroARPlaneSelector>
-        <ViroBox
-          position={[0, 0, 0]}
-          scale={[0.1, 0.1, 0.1]}
-          materials={["grid"]}
-        />
-      </ViroARPlaneSelector>
+      {/* Debug info display */}
+      {showDebugInfo && (
+        <ViroNode position={[0, -0.5, -2]}>
+          <ViroText
+            text={`Frames: ${frames.length} | Tracking: ${
+              trackingStatus.isTracking ? "OK" : "Limited"
+            }`}
+            scale={[0.5, 0.5, 0.5]}
+            position={[0, 0, 0]}
+            style={{ color: "white", fontFamily: "Arial", fontSize: 12 }}
+          />
+          <ViroText
+            text={`State: ${trackingStatus.state} | Reason: ${trackingStatus.reason}`}
+            scale={[0.5, 0.5, 0.5]}
+            position={[0, -0.1, 0]}
+            style={{ color: "white", fontFamily: "Arial", fontSize: 12 }}
+          />
+          <ViroText
+            text={`Stability: ${deviceStability.toFixed(2)} | Stage: ${stage}`}
+            scale={[0.5, 0.5, 0.5]}
+            position={[0, -0.2, 0]}
+            style={{ color: "white", fontFamily: "Arial", fontSize: 12 }}
+          />
+        </ViroNode>
+      )}
     </ViroARScene>
   );
 
@@ -272,11 +392,6 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
         style={styles.arView}
         ref={arSceneNavigatorRef}
         autofocus={true}
-        onInitialized={(state, reason) => {
-          if (state === "INITIALIZED") {
-            initializeAR(null, arSceneNavigatorRef.current);
-          }
-        }}
       />
 
       {/* Header */}
@@ -372,6 +487,17 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
                   style={styles.completeButton}
                 />
               )}
+
+            {__DEV__ && (
+              <TouchableOpacity
+                style={styles.debugButton}
+                onPress={toggleDebugInfo}
+              >
+                <Text style={styles.debugButtonText}>
+                  {showDebugInfo ? "Hide Debug" : "Debug"}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {/* Movement quality indicator */}
@@ -380,6 +506,26 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
               <Text style={styles.qualityText}>
                 {getMovementQuality().recommendation}
               </Text>
+            </View>
+          )}
+
+          {/* Debug controls */}
+          {__DEV__ && showDebugInfo && stage !== "initializing" && (
+            <View style={styles.debugControls}>
+              <Button
+                title="Log Debug Info"
+                onPress={logScanDebugInfo}
+                variant="secondary"
+                size="small"
+                style={styles.debugActionButton}
+              />
+              <Button
+                title="Export Debug Data"
+                onPress={exportDebugData}
+                variant="secondary"
+                size="small"
+                style={styles.debugActionButton}
+              />
             </View>
           )}
         </View>
@@ -410,7 +556,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    paddingTop: 40,
+    paddingTop: Platform.OS === "ios" ? 40 : 20,
   },
   backButton: {
     padding: 10,
@@ -447,7 +593,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 20,
     paddingTop: 15,
-    paddingBottom: 30,
+    paddingBottom: Platform.OS === "ios" ? 30 : 20,
   },
   progressContainer: {
     marginBottom: 15,
@@ -468,6 +614,28 @@ const styles = StyleSheet.create({
   },
   completeButton: {
     marginLeft: 10,
+  },
+  debugButton: {
+    backgroundColor: "rgba(255, 255, 255, 0.1)",
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    borderRadius: 20,
+    marginLeft: 10,
+  },
+  debugButtonText: {
+    color: "#ccc",
+    fontSize: 12,
+  },
+  debugControls: {
+    flexDirection: "row",
+    justifyContent: "space-evenly",
+    marginTop: 10,
+    backgroundColor: "rgba(0, 0, 0, 0.3)",
+    borderRadius: 8,
+    padding: 8,
+  },
+  debugActionButton: {
+    marginHorizontal: 5,
   },
   qualityIndicator: {
     alignItems: "center",

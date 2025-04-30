@@ -1,14 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { Accelerometer, Gyroscope } from "expo-sensors";
-import {
-  DeviceMotionSensor,
-  DeviceMotionMeasurement,
-  DeviceMotionOrientation,
-} from "expo-sensors/build/DeviceMotion";
+import { Accelerometer, Gyroscope, DeviceMotion } from "expo-sensors";
 import { THREE } from "expo-three";
-
-// Create a DeviceMotion instance
-const DeviceMotion = new DeviceMotionSensor(null, "deviceMotionDidUpdate");
 
 export interface MotionData {
   rotation: {
@@ -61,11 +53,10 @@ export function useSensors(options: SensorOptions = {}) {
   );
   const [deviceStability, setDeviceStability] = useState<number>(1.0);
 
-  // Using ref to store subscriptions so they can be accessed in setSensorsActive
   const subscriptions = useRef({
-    deviceMotion: null as { remove: () => void } | null,
-    accelerometer: null as { remove: () => void } | null,
-    gyroscope: null as { remove: () => void } | null,
+    deviceMotion: null as ReturnType<typeof DeviceMotion.addListener> | null,
+    accelerometer: null as ReturnType<typeof Accelerometer.addListener> | null,
+    gyroscope: null as ReturnType<typeof Gyroscope.addListener> | null,
   });
 
   const setupSensors = async () => {
@@ -115,7 +106,6 @@ export function useSensors(options: SensorOptions = {}) {
             }
           );
         } else {
-          // If DeviceMotion isn't available but was requested, try fallback sensors
           console.warn("DeviceMotion not available, will try fallback sensors");
           opts.useAccelerometer = true;
           opts.useGyroscope = true;
@@ -198,7 +188,6 @@ export function useSensors(options: SensorOptions = {}) {
     setupSensors();
 
     return () => {
-      // Cleanup subscriptions on unmount
       cleanupSubscriptions();
     };
   }, [
@@ -235,7 +224,6 @@ export function useSensors(options: SensorOptions = {}) {
     alpha: number;
     beta: number;
     gamma: number;
-    timestamp: number;
   }) => {
     const alpha = rotation.alpha || 0;
     const beta = rotation.beta || 0;
@@ -259,8 +247,6 @@ export function useSensors(options: SensorOptions = {}) {
     y: number;
     z: number;
   }) => {
-    // This would be more complex in a real implementation
-    // For now, just a simple integration of gyroscope data
     const x = data.x || 0;
     const y = data.y || 0;
     const z = data.z || 0;
