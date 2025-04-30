@@ -53,6 +53,20 @@ export function useSensors(options: SensorOptions = {}) {
   );
   const [deviceStability, setDeviceStability] = useState<number>(1.0);
 
+  // For tracking motion over time
+  const lastAccelerationRef = useRef<{ x: number; y: number; z: number }>({
+    x: 0,
+    y: 0,
+    z: 0,
+  });
+  const recentMovementsRef = useRef<number[]>([]);
+  const MAX_MOVEMENT_HISTORY = 10;
+
+  // For calibration
+  const baselineReadingsRef = useRef<number[]>([]);
+  const isCalibrated = useRef<boolean>(false);
+  const calibrationThreshold = 0.01; // Threshold for determining when device is stable for calibration
+
   const subscriptions = useRef({
     deviceMotion: null as ReturnType<typeof DeviceMotion.addListener> | null,
     accelerometer: null as ReturnType<typeof Accelerometer.addListener> | null,
@@ -174,6 +188,10 @@ export function useSensors(options: SensorOptions = {}) {
 
       setIsAvailable(sensorAvailable);
       setIsActive(sensorAvailable);
+
+      // Start with calibration mode
+      isCalibrated.current = false;
+      baselineReadingsRef.current = [];
     } catch (err) {
       console.error("Error setting up sensors:", err);
       setHasError(true);
@@ -267,21 +285,107 @@ export function useSensors(options: SensorOptions = {}) {
     y: number;
     z: number;
   }) => {
-    // Calculate movement magnitude
-    const movementMagnitude = Math.sqrt(
+    // Calculate magnitude of current acceleration vector
+    const magnitude = Math.sqrt(
       acceleration.x * acceleration.x +
         acceleration.y * acceleration.y +
         acceleration.z * acceleration.z
     );
 
-    // Gravity is approximately 9.8 m/s²
-    // Subtract it to get the device movement
-    const movement = Math.abs(movementMagnitude - 9.8);
+    // If we're in calibration mode, try to establish a baseline
+    if (!isCalibrated.current) {
+      handleCalibration(magnitude, acceleration);
+      return;
+    }
 
-    // Map stability from 0-5 to 0-1 (inverse, more movement = less stable)
-    const stability = Math.max(0, Math.min(1, 1 - movement / 5));
+    // Calculate change in acceleration from last reading
+    const lastAccel = lastAccelerationRef.current;
+    const deltaX = Math.abs(acceleration.x - lastAccel.x);
+    const deltaY = Math.abs(acceleration.y - lastAccel.y);
+    const deltaZ = Math.abs(acceleration.z - lastAccel.z);
 
-    setDeviceStability(stability);
+    // Combined movement detection - this better captures device motion
+    const totalMovement = Math.sqrt(
+      deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ
+    );
+
+    // Store current reading for next comparison
+    lastAccelerationRef.current = { ...acceleration };
+
+    // Add to recent movements history
+    recentMovementsRef.current.push(totalMovement);
+    if (recentMovementsRef.current.length > MAX_MOVEMENT_HISTORY) {
+      recentMovementsRef.current.shift();
+    }
+
+    // Calculate average recent movement
+    const avgMovement =
+      recentMovementsRef.current.reduce((sum, val) => sum + val, 0) /
+      recentMovementsRef.current.length;
+
+    // Convert movement to stability (0-1 range)
+    // Based on your data, even small movements of 0.02-0.05 are significant
+    // This maps movement to stability:
+    // 0.0 movement -> 1.0 stability
+    // >0.1 movement -> 0.0 stability (clamped)
+    const newStability = Math.max(0, Math.min(1, 1 - avgMovement * 10));
+
+    // Apply some smoothing between frames, don't jump directly to new value
+    const currentStability = deviceStability;
+    const smoothedStability = currentStability * 0.6 + newStability * 0.4;
+
+    if (__DEV__) {
+      // console.log("Movement:", totalMovement.toFixed(6));
+      // console.log("Avg Movement:", avgMovement.toFixed(6));
+      // console.log("New Stability:", newStability.toFixed(6));
+      // console.log("Smoothed Stability:", smoothedStability.toFixed(6));
+    }
+
+    setDeviceStability(smoothedStability);
+  };
+
+  const handleCalibration = (
+    magnitude: number,
+    acceleration: { x: number; y: number; z: number }
+  ) => {
+    // Add current magnitude to calibration readings
+    baselineReadingsRef.current.push(magnitude);
+
+    // Keep only the most recent readings
+    if (baselineReadingsRef.current.length > 20) {
+      baselineReadingsRef.current.shift();
+    }
+
+    // After collecting enough readings, check if device is stable
+    if (baselineReadingsRef.current.length >= 10) {
+      // Calculate variance of readings
+      const avg =
+        baselineReadingsRef.current.reduce((sum, val) => sum + val, 0) /
+        baselineReadingsRef.current.length;
+
+      const variance =
+        baselineReadingsRef.current.reduce(
+          (sum, val) => sum + Math.pow(val - avg, 2),
+          0
+        ) / baselineReadingsRef.current.length;
+
+      // If variance is below threshold, device is stable enough for calibration
+      if (variance < calibrationThreshold) {
+        if (__DEV__) {
+          console.log("Device calibrated! Baseline magnitude:", avg);
+          console.log("Variance:", variance);
+        }
+
+        // Initialize last acceleration values for future comparisons
+        lastAccelerationRef.current = { ...acceleration };
+
+        // Mark as calibrated
+        isCalibrated.current = true;
+
+        // Set initial stability to perfect since we're calibrated while still
+        setDeviceStability(1.0);
+      }
+    }
   };
 
   const getDeviceOrientation = (): THREE.Quaternion => {
@@ -298,17 +402,24 @@ export function useSensors(options: SensorOptions = {}) {
     stability: number;
     recommendation: string;
   } => {
-    if (deviceStability > 0.9) {
+    if (!isCalibrated.current) {
+      return {
+        stability: 0,
+        recommendation: "Hold the device still for calibration...",
+      };
+    }
+
+    if (deviceStability > 0.85) {
       return {
         stability: deviceStability,
         recommendation: "Excellent stability. Perfect for scanning.",
       };
-    } else if (deviceStability > 0.7) {
+    } else if (deviceStability > 0.6) {
       return {
         stability: deviceStability,
         recommendation: "Good stability. Continue scanning.",
       };
-    } else if (deviceStability > 0.4) {
+    } else if (deviceStability > 0.3) {
       return {
         stability: deviceStability,
         recommendation:
@@ -332,6 +443,13 @@ export function useSensors(options: SensorOptions = {}) {
     }
   };
 
+  // Force recalibration
+  const recalibrate = (): void => {
+    isCalibrated.current = false;
+    baselineReadingsRef.current = [];
+    recentMovementsRef.current = [];
+  };
+
   // Function to reset sensor data
   const resetSensorData = (): void => {
     setMotionData({
@@ -341,6 +459,7 @@ export function useSensors(options: SensorOptions = {}) {
     });
     setQuaternion(new THREE.Quaternion());
     setDeviceStability(1.0);
+    recalibrate();
   };
 
   return {
@@ -351,10 +470,12 @@ export function useSensors(options: SensorOptions = {}) {
     motionData,
     quaternion,
     deviceStability,
+    isCalibrated: isCalibrated.current,
     getDeviceOrientation,
     getTransformationMatrix,
     getMovementQuality,
     setSensorsActive,
     resetSensorData,
+    recalibrate,
   };
 }

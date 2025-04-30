@@ -1,16 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { Camera } from "expo-camera";
-import { DeviceMotion } from "expo-sensors";
-import { THREE } from "expo-three";
 import { v4 as uuidv4 } from "uuid";
 
 import { useScanStore, ScanFrame, ScanPoint } from "../stores/scanStore";
-import { createARScene, ARScene } from "../utils/ar/sceneManager";
-import {
-  extractFeaturesFromFrame,
-  matchFeaturesAcrossFrames,
-  calculatePointCloudNormals,
-} from "../utils/ar/pointCloudProcessing";
+import { ARScene } from "../utils/ar/sceneManager";
 import { generateMeshFromFrames } from "../utils/ar/meshGeneration";
 
 interface UseScanningProps {
@@ -61,8 +54,6 @@ export function useScanning({
       }
     })();
 
-    DeviceMotion.setUpdateInterval(100);
-
     return () => {
       if (captureTimerRef.current) {
         clearTimeout(captureTimerRef.current);
@@ -71,19 +62,15 @@ export function useScanning({
     };
   }, [resetScan, setError]);
 
-  const initializeAR = async (gl: any, arSession: any) => {
+  const initializeAR = async (arScene: ARScene | null, arSession: any) => {
     try {
-      glRef.current = gl;
-      arSessionRef.current = arSession;
+      if (arScene) {
+        arSceneRef.current = arScene;
+      }
 
-      arSceneRef.current = createARScene(
-        gl,
-        arSession,
-        handleTrackingUpdated,
-        handlePointCloudUpdated
-      );
-
-      await arSceneRef.current.initialize();
+      if (arSession) {
+        arSessionRef.current = arSession;
+      }
 
       setIsARReady(true);
       setStage("ready");
@@ -166,20 +153,18 @@ export function useScanning({
   };
 
   const captureFrame = async () => {
-    if (!cameraRef.current || !arSceneRef.current || processingFrameRef.current)
-      return;
+    if (!arSceneRef.current || processingFrameRef.current) return;
 
     processingFrameRef.current = true;
 
     try {
       const cameraData = arSceneRef.current.getCamera();
 
-      // This would be a real implementation using camera feed
-      // Since we're simulating for this demo, we'll create synthetic data
+      // Create a new scan frame with current camera data
       const newFrame: ScanFrame = {
         id: uuidv4(),
         timestamp: Date.now(),
-        points: generateSyntheticPoints(cameraData.position, 50),
+        points: [], // This would be populated by the AR system in a real implementation
         cameraPosition: cameraData.position.clone(),
         cameraRotation: cameraData.rotation.clone(),
       };
@@ -197,31 +182,6 @@ export function useScanning({
     } finally {
       processingFrameRef.current = false;
     }
-  };
-
-  const generateSyntheticPoints = (
-    cameraPosition: THREE.Vector3,
-    count: number
-  ): ScanPoint[] => {
-    const points: ScanPoint[] = [];
-
-    for (let i = 0; i < count; i++) {
-      // Generate random points within view frustum
-      const distance = 0.5 + Math.random() * 4.5;
-      const angle = Math.random() * Math.PI * 2;
-      const height = -1 + Math.random() * 2;
-
-      const x = cameraPosition.x + Math.cos(angle) * distance;
-      const y = cameraPosition.y + height;
-      const z = cameraPosition.z + Math.sin(angle) * distance;
-
-      points.push({
-        position: new THREE.Vector3(x, y, z),
-        confidence: 0.5 + Math.random() * 0.5,
-      });
-    }
-
-    return points;
   };
 
   const completeScan = async () => {

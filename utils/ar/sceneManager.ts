@@ -29,13 +29,22 @@ export function createARScene(
   const capturedPoints: ScanPoint[] = [];
 
   const initialize = async (): Promise<void> => {
+    // First check if GL context is valid before using it
+    if (!gl) {
+      console.error("GL context is null or undefined");
+      return Promise.reject(new Error("GL context is null or undefined"));
+    }
+
+    // Create scene
     scene = new THREE.Scene();
-    camera = new THREE.PerspectiveCamera(
-      75,
-      gl.drawingBufferWidth / gl.drawingBufferHeight,
-      0.1,
-      1000
-    );
+
+    // Get GL dimensions safely
+    const width = gl.drawingBufferWidth || 1;
+    const height = gl.drawingBufferHeight || 1;
+    const aspectRatio = width / height;
+
+    // Create camera with safe aspect ratio
+    camera = new THREE.PerspectiveCamera(75, aspectRatio, 0.1, 1000);
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
     scene.add(ambientLight);

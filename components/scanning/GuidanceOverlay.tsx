@@ -5,11 +5,12 @@ import Animated, {
   useAnimatedStyle,
   withTiming,
   withSequence,
-  withRepeat,
   Easing,
 } from "react-native-reanimated";
-
-import InstructionCard from "../ui/InstructionCard";
+import {
+  ViroTrackingStateConstants,
+  ViroARTrackingReasonConstants,
+} from "@reactvision/react-viro";
 import { ScanningStage } from "../../stores/scanStore";
 import { TrackingStatus } from "../../hooks/useARTracking";
 
@@ -46,7 +47,7 @@ const GuidanceOverlay: React.FC<GuidanceOverlayProps> = ({
         withTiming(1, { duration: 300 })
       );
     }
-  }, [scanningStage, currentStep]);
+  }, [scanningStage, currentStep, showGuidance]);
 
   useEffect(() => {
     // Update current guidance step based on scanning stage and conditions
@@ -67,16 +68,20 @@ const GuidanceOverlay: React.FC<GuidanceOverlayProps> = ({
     }
 
     // Handle specific tracking issues
-    if (trackingStatus.state === "TRACKING_LIMITED") {
-      if (trackingStatus.reason === "EXCESSIVE_MOTION") {
+    if (trackingStatus.state === ViroTrackingStateConstants.TRACKING_LIMITED) {
+      if (
+        trackingStatus.reason ===
+        ViroARTrackingReasonConstants.TRACKING_REASON_EXCESSIVE_MOTION
+      ) {
         setCurrentStep(6);
-      } else if (trackingStatus.reason === "INSUFFICIENT_FEATURES") {
+      } else if (
+        trackingStatus.reason ===
+        ViroARTrackingReasonConstants.TRACKING_REASON_INSUFFICIENT_FEATURES
+      ) {
         setCurrentStep(7);
-      } else if (trackingStatus.reason === "INSUFFICIENT_LIGHT") {
-        setCurrentStep(8);
       }
     }
-  }, [scanningStage, trackingStatus, framesCount]);
+  }, [scanningStage, trackingStatus.state, trackingStatus.reason, framesCount]);
 
   const animatedStyle = useAnimatedStyle(() => {
     return {
@@ -163,15 +168,6 @@ const GuidanceOverlay: React.FC<GuidanceOverlayProps> = ({
             "Move to a more detailed part of the space",
           ],
         };
-      case 8: // Insufficient light
-        return {
-          title: "Lighting Too Dark",
-          instructions: [
-            "Move to a better lit environment",
-            "Turn on more lights if possible",
-            "Avoid very bright direct light that causes glare",
-          ],
-        };
       default:
         return {
           title: "Scanning Tips",
@@ -184,14 +180,12 @@ const GuidanceOverlay: React.FC<GuidanceOverlayProps> = ({
     }
   };
 
-  const { title, instructions } = getInstructions();
-
   // Show specific highlight index based on current step
   const getHighlightIndex = () => {
     if (currentStep === 0) return 0; // Initially highlight first item
     if (currentStep === 2 && deviceStability < 0.5) return 1; // Highlight stability if poor
+    if (currentStep === 6) return 0; // Highlight first item for motion issues
     if (currentStep === 7) return 0; // Highlight first item for feature issues
-    if (currentStep === 8) return 0; // Highlight first item for lighting issues
     return -1; // No highlight
   };
 
@@ -203,20 +197,44 @@ const GuidanceOverlay: React.FC<GuidanceOverlayProps> = ({
     } else if (deviceStability > 0.4) {
       return { text: "Moderate stability", color: "#ffcc00" };
     } else {
-      return { text: "Poor stability - hold steady", color: "#ff3b30" };
+      return {
+        text: `Poor stability - hold steady ${deviceStability}`,
+        color: "#ff3b30",
+      };
     }
   };
 
+  const { title, instructions } = getInstructions();
   const { text: stabilityText, color: stabilityColor } = getStabilityMessage();
+  const highlightIndex = getHighlightIndex();
+
+  if (!showGuidance) return null;
 
   return (
     <Animated.View style={[styles.container, animatedStyle]}>
-      <InstructionCard
-        title={title}
-        instructions={instructions}
-        highlightIndex={getHighlightIndex()}
-        style={styles.instructionCard}
-      />
+      <View style={styles.instructionCard}>
+        <Text style={styles.cardTitle}>{title}</Text>
+
+        {instructions.map((instruction, index) => (
+          <View
+            key={index}
+            style={[
+              styles.instructionItem,
+              highlightIndex === index && styles.highlightedItem,
+            ]}
+          >
+            <Text style={styles.instructionBullet}>•</Text>
+            <Text
+              style={[
+                styles.instructionText,
+                highlightIndex === index && styles.highlightedText,
+              ]}
+            >
+              {instruction}
+            </Text>
+          </View>
+        ))}
+      </View>
 
       {scanningStage === "scanning" && (
         <View style={styles.statusInfo}>
@@ -262,6 +280,44 @@ const styles = StyleSheet.create({
   instructionCard: {
     width: "100%",
     maxWidth: 450,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+  },
+  cardTitle: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 12,
+    textAlign: "center",
+  },
+  instructionItem: {
+    flexDirection: "row",
+    marginBottom: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  highlightedItem: {
+    backgroundColor: "rgba(74, 128, 245, 0.2)",
+  },
+  instructionBullet: {
+    color: "#4a80f5",
+    fontSize: 16,
+    marginRight: 8,
+    width: 15,
+  },
+  instructionText: {
+    color: "#e0e0e0",
+    fontSize: 14,
+    flex: 1,
+    lineHeight: 20,
+  },
+  highlightedText: {
+    color: "#fff",
+    fontWeight: "500",
   },
   statusInfo: {
     flexDirection: "row",

@@ -12,7 +12,6 @@ import { StatusBar } from "expo-status-bar";
 import { Camera } from "expo-camera";
 import {
   ViroARScene,
-  ViroARSceneNavigator,
   ViroNode,
   ViroText,
   ViroTrackingStateConstants,
@@ -34,6 +33,8 @@ import Button from "../ui/Button";
 import GuidanceOverlay from "./GuidanceOverlay";
 import ProcessingOverlay from "./ProcessingOverlay";
 import ProgressIndicator from "../ui/ProgressIndicator";
+import ARScanView from "./ArScanView";
+import { ARScene } from "../../utils/ar/sceneManager";
 import {
   logScanDebugInfo,
   exportScanDebugData,
@@ -97,7 +98,6 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
   const [isCancelling, setIsCancelling] = useState(false);
   const [showDebugInfo, setShowDebugInfo] = useState(__DEV__);
 
-  const arSceneNavigatorRef = useRef(null);
   const cameraTransformRef = useRef<{
     position: THREE.Vector3;
     rotation: THREE.Quaternion;
@@ -269,7 +269,6 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
 
     if (state === ViroTrackingStateConstants.TRACKING_NORMAL) {
       if (stage === "initializing") {
-        initializeAR(null, arSceneNavigatorRef.current);
         setStage("ready");
       }
     }
@@ -384,14 +383,14 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
     <View style={styles.container}>
       <StatusBar style="light" />
 
-      {/* AR Scene Navigator */}
-      <ViroARSceneNavigator
-        initialScene={{
-          scene: ARSceneComponent,
+      {/* AR Scan View with integrated GL and ARScene */}
+      <ARScanView
+        onARSceneCreated={(scene: ARScene) => {
+          initializeAR(scene, null);
         }}
-        style={styles.arView}
-        ref={arSceneNavigatorRef}
-        autofocus={true}
+        onTrackingUpdated={handleARInitialized}
+        onPointCloudUpdated={(points) => {}}
+        renderARContent={ARSceneComponent}
       />
 
       {/* Header */}
@@ -449,7 +448,6 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
       {/* Footer with controls */}
       <Animated.View style={[styles.footer, footerAnimatedStyle]}>
         <View style={styles.footerContent}>
-          {/* Scan progress indicator */}
           <View style={styles.progressContainer}>
             <ProgressIndicator
               progress={Math.min(100, (frames.length / 50) * 100)}
@@ -461,7 +459,6 @@ const ScanningInterface: React.FC<ScanningInterfaceProps> = ({
             </Text>
           </View>
 
-          {/* Action buttons */}
           <View style={styles.controlsContainer}>
             <Button
               title={
@@ -582,7 +579,7 @@ const styles = StyleSheet.create({
   },
   footer: {
     position: "absolute",
-    bottom: 0,
+    bottom: 40,
     left: 0,
     right: 0,
     backgroundColor: "rgba(0, 0, 0, 0.5)",
@@ -607,7 +604,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 10,
   },
   actionButton: {
     minWidth: 150,
